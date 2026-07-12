@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-HoopsHype coaching-rumor RSS feed.
+HoopsHype coaching-rumor digest feed.
 
-Fetches the coaching rumors, merges any new ones into a running archive, and
-regenerates docs/feed.xml. GitHub Pages serves that file; you subscribe in any
-RSS reader. No credentials anywhere.
+Each run collects any rumors that are new since last time and publishes them as
+ONE feed item. So your reader shows a single unread entry -- click it and every
+new rumor is right there.
 
 HoopsHype is a Next.js app that server-renders its GraphQL results into a
 __NEXT_DATA__ <script> tag, so one plain HTTP GET already contains the rumor
 JSON. No browser, no API, no CSS selectors.
 
-    python3 rumors.py            # fetch -> merge -> write feed
+    python3 rumors.py            # fetch -> digest -> write feed
     python3 rumors.py --dry-run  # show what's new, write nothing
 """
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -27,17 +27,23 @@ from bs4 import BeautifulSoup
 TOPIC = "e300653b-ba27-432e-b06f-e14978b768fa"  # "Coaching" tag
 URL = f"https://www.hoopshype.com/rumors/?topic={TOPIC}"
 
-# --- Set this to your Pages URL after step 2 of the README -----------------
-FEED_URL = "https://jeffreyrnewton-hub.github.io/hoopshype_coaching_rss/feed.xml"
+# --- Set this to your Pages URL once it's live -----------------------------
+FEED_URL = "https://YOUR-USERNAME.github.io/YOUR-REPO/feed.xml"
 
-ARCHIVE = Path("items.json")   # running state: every rumor we've ever seen
+STATE = Path("state.json")     # digests + anything waiting to be published
 FEED = Path("docs/feed.xml")   # published output
-MAX_ARCHIVE = 300              # cap the state file
-MAX_FEED = 50                  # items in the published feed
 
-# Full rumor text in the feed, or a short excerpt + link?
-#   None  -> full text (fine for a private/personal feed)
-#   200   -> excerpt, the polite pattern if you ever share the URL
+# How long to let rumors pile up before publishing a digest.
+#   0  -> publish every run that finds something (with a 6h cron: up to 4/day)
+#   20 -> poll every 6h but publish at most one digest per day
+MIN_HOURS_BETWEEN_DIGESTS = 0
+
+MAX_DIGESTS = 100  # keep in state.json
+MAX_FEED = 50      # publish in feed.xml
+
+# Full rumor text, or a short excerpt + link?
+#   None -> full text (fine for a personal feed)
+#   200  -> excerpt, the polite pattern if you ever share the URL
 EXCERPT_CHARS = None
 
 HEADERS = {
@@ -146,72 +152,99 @@ def normalize(asset):
 
 
 # --------------------------------------------------------------------------
-# Archive
+# State
 # --------------------------------------------------------------------------
-def load_archive():
-    if not ARCHIVE.exists():
-        return []
+def load_state():
+    if not STATE.exists():
+        return {"digests": [], "pending": []}
     try:
-        return json.loads(ARCHIVE.read_text())
+        data = json.loads(STATE.read_text())
+        data.setdefault("digests", [])
+        data.setdefault("pending", [])
+        return data
     except json.JSONDecodeError:
-        print("items.json unreadable; starting fresh.", file=sys.stderr)
-        return []
+        print("state.json unreadable; starting fresh.", file=sys.stderr)
+        return {"digests": [], "pending": []}
 
 
-def sort_key(item):
+def parse_dt(value):
     try:
-        return datetime.fromisoformat(item["published"].replace("Z", "+00:00"))
-    except (ValueError, KeyError, AttributeError):
+        return datetime.fromisoformat((value or "").replace("Z", "+00:00"))
+    except ValueError:
         return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def known_ids(state):
+    """Every rumor we've already published or queued — the dedupe set."""
+    ids = {r["id"] for r in state["pending"]}
+    for digest in state["digests"]:
+        ids.update(r["id"] for r in digest.get("rumors", []))
+    return ids
 
 
 # --------------------------------------------------------------------------
 # Feed
 # --------------------------------------------------------------------------
-def pub_date(item):
-    try:
-        dt = datetime.fromisoformat(item["published"].replace("Z", "+00:00"))
-    except (ValueError, KeyError, AttributeError):
-        dt = datetime.now(timezone.utc)
-    return format_datetime(dt)
-
-
-def title_of(item):
-    body = item["text"]
-    snippet = body if len(body) <= 90 else body[:87].rstrip() + "..."
-    return f"{item['team']}: {snippet}" if item["team"] else snippet
-
-
-def description_of(item):
-    body = item["text"]
+def rumor_html(r):
+    body = r["text"]
     truncated = False
     if EXCERPT_CHARS and len(body) > EXCERPT_CHARS:
         body = body[:EXCERPT_CHARS].rstrip() + "..."
         truncated = True
 
-    parts = [f"<p>{escape(body)}</p>"]
-    if item.get("source_url"):
-        parts.append(
-            f"<p>Source: <a href=\"{escape(item['source_url'])}\">"
-            f"{escape(item.get('source_name') or 'link')}</a></p>"
+    when = parse_dt(r["published"]).strftime("%b %d, %H:%M UTC")
+    meta = f"{escape(r['team'])} · {when}" if r["team"] else when
+    if r.get("source_url"):
+        meta += (
+            f" · <a href=\"{escape(r['source_url'])}\">"
+            f"via {escape(r.get('source_name') or 'source')}</a>"
         )
-    if truncated:
-        parts.append(f"<p><a href=\"{escape(item['url'])}\">Read the full rumor →</a></p>")
-    return "".join(parts)
+
+    tail = (
+        f" <a href=\"{escape(r['url'])}\">Read more →</a>"
+        if truncated else
+        f" <a href=\"{escape(r['url'])}\">HoopsHype →</a>"
+    )
+
+    return (
+        "<div style=\"margin:0 0 20px;padding-bottom:16px;"
+        "border-bottom:1px solid #e5e5e5\">"
+        f"<div style=\"font-size:12px;color:#888;margin-bottom:5px\">{meta}</div>"
+        f"<div style=\"font-size:15px;line-height:1.5\">{escape(body)}</div>"
+        f"<div style=\"font-size:12px;margin-top:5px\">{tail}</div>"
+        "</div>"
+    )
 
 
-def build_feed(items):
+def digest_title(digest):
+    n = len(digest["rumors"])
+    teams = [r["team"] for r in digest["rumors"] if r["team"]]
+    unique = sorted(set(teams))
+
+    when = parse_dt(digest["built_at"]).strftime("%b %d")
+    noun = "rumor" if n == 1 else "rumors"
+
+    if 1 <= len(unique) <= 3:
+        return f"{n} coaching {noun} — {', '.join(unique)} ({when})"
+    return f"{n} coaching {noun} — {when}"
+
+
+def build_feed(digests):
     now = format_datetime(datetime.now(timezone.utc))
     entries = []
-    for item in items[:MAX_FEED]:
+
+    for digest in digests[:MAX_FEED]:
+        rumors = sorted(digest["rumors"], key=lambda r: parse_dt(r["published"]), reverse=True)
+        body = "".join(rumor_html(r) for r in rumors)
+        link = rumors[0]["url"] if rumors else URL
+
         entries.append(
             "    <item>\n"
-            f"      <title>{escape(title_of(item))}</title>\n"
-            f"      <link>{escape(item['url'])}</link>\n"
-            f"      <guid isPermaLink=\"false\">hoopshype-{escape(item['id'])}</guid>\n"
-            f"      <pubDate>{pub_date(item)}</pubDate>\n"
-            + (f"      <category>{escape(item['team'])}</category>\n" if item["team"] else "")
-            + f"      <description><![CDATA[{description_of(item)}]]></description>\n"
+            f"      <title>{escape(digest_title(digest))}</title>\n"
+            f"      <link>{escape(link)}</link>\n"
+            f"      <guid isPermaLink=\"false\">digest-{escape(digest['id'])}</guid>\n"
+            f"      <pubDate>{format_datetime(parse_dt(digest['built_at']))}</pubDate>\n"
+            f"      <description><![CDATA[{body}]]></description>\n"
             "    </item>"
         )
 
@@ -221,7 +254,7 @@ def build_feed(items):
         "  <channel>\n"
         "    <title>HoopsHype — NBA Coaching Rumors</title>\n"
         f"    <link>{escape(URL)}</link>\n"
-        "    <description>Coaching rumors aggregated from HoopsHype. "
+        "    <description>Coaching rumors from HoopsHype, batched into digests. "
         "Unofficial personal feed; all content belongs to HoopsHype and the "
         "original reporters.</description>\n"
         "    <language>en-us</language>\n"
@@ -235,22 +268,24 @@ def build_feed(items):
 # --------------------------------------------------------------------------
 def main():
     dry_run = "--dry-run" in sys.argv
+    now = datetime.now(timezone.utc)
 
     raw = extract_assets(get_next_data())
     if not raw:
-        # Fail loudly. A silent zero would freeze the feed and you'd never
-        # learn why; a failed job makes GitHub notify you instead.
+        # Fail loudly. A silent zero would freeze the feed and you'd never learn
+        # why; a failed job makes GitHub notify you instead.
         print("Parsed 0 rumors — page structure changed.", file=sys.stderr)
         sys.exit(1)
 
-    scraped = [normalize(a) for a in raw]
-    scraped = [r for r in scraped if r["id"] and r["text"]]
+    scraped = [r for r in (normalize(a) for a in raw) if r["id"] and r["text"]]
 
-    archive = load_archive()
-    known = {item["id"] for item in archive}
-    new = [r for r in scraped if r["id"] not in known]
+    state = load_state()
+    seen = known_ids(state)
+    new = [r for r in scraped if r["id"] not in seen]
 
-    print(f"{len(scraped)} on page, {len(new)} new, {len(archive)} in archive.")
+    print(f"{len(scraped)} on page, {len(new)} new, "
+          f"{len(state['pending'])} already pending, "
+          f"{len(state['digests'])} digests published.")
 
     if dry_run:
         for r in new:
@@ -258,13 +293,34 @@ def main():
             print(f"\n  [{label}{r['published']}]\n  {r['text'][:160]}")
         return
 
-    merged = sorted(archive + new, key=sort_key, reverse=True)[:MAX_ARCHIVE]
+    state["pending"].extend(new)
 
-    ARCHIVE.write_text(json.dumps(merged, indent=1, ensure_ascii=False))
+    # Publish a digest if anything is waiting and enough time has passed.
+    should_publish = bool(state["pending"])
+    if should_publish and MIN_HOURS_BETWEEN_DIGESTS and state["digests"]:
+        last = parse_dt(state["digests"][0]["built_at"])
+        if now - last < timedelta(hours=MIN_HOURS_BETWEEN_DIGESTS):
+            should_publish = False
+            print(f"Holding {len(state['pending'])} rumor(s) — "
+                  f"last digest was {(now - last).total_seconds() / 3600:.1f}h ago.")
+
+    if should_publish:
+        digest = {
+            "id": now.strftime("%Y%m%dT%H%M%SZ"),
+            "built_at": now.isoformat().replace("+00:00", "Z"),
+            "rumors": state["pending"],
+        }
+        state["digests"].insert(0, digest)
+        state["digests"] = state["digests"][:MAX_DIGESTS]
+        state["pending"] = []
+        print(f"Published digest {digest['id']} with {len(digest['rumors'])} rumor(s).")
+    elif not state["pending"]:
+        print("Nothing new.")
+
+    STATE.write_text(json.dumps(state, indent=1, ensure_ascii=False))
     FEED.parent.mkdir(parents=True, exist_ok=True)
-    FEED.write_text(build_feed(merged), encoding="utf-8")
-
-    print(f"Wrote {FEED} with {min(len(merged), MAX_FEED)} items (+{len(new)} new).")
+    FEED.write_text(build_feed(state["digests"]), encoding="utf-8")
+    print(f"Wrote {FEED} — {min(len(state['digests']), MAX_FEED)} digest item(s).")
 
 
 if __name__ == "__main__":
