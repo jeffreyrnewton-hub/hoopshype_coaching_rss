@@ -28,7 +28,7 @@ TOPIC = "e300653b-ba27-432e-b06f-e14978b768fa"  # "Coaching" tag
 URL = f"https://www.hoopshype.com/rumors/?topic={TOPIC}"
 
 # --- Set this to your Pages URL after step 2 of the README -----------------
-FEED_URL = "https://YOUR-USERNAME.github.io/YOUR-REPO/feed.xml"
+FEED_URL = "https://jeffreyrnewton-hub.github.io/hoopshype_coaching_rss/feed.xml"
 
 ARCHIVE = Path("items.json")   # running state: every rumor we've ever seen
 FEED = Path("docs/feed.xml")   # published output
