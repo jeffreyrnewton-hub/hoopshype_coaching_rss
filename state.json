@@ -1,6 +1,30 @@
 {
  "digests": [
   {
+   "id": "20260804T011850Z",
+   "built_at": "2026-08-04T01:18:50.941111Z",
+   "rumors": [
+    {
+     "id": "91158320007",
+     "text": "Michael Scotto: The New Orleans Pelicans and Caleb Houstan have agreed to a one-year deal, league sources told @hoopshype. He’ll compete for the final Pelicans roster spot after shooting 52.4% from 3-point range with the Hawks last season. He reunites with former Magic coach Jamahl Mosley.",
+     "team": "Atlanta Hawks",
+     "published": "2026-08-03T22:04:59Z",
+     "url": "https://www.hoopshype.com/story/sports/nba/rumors/2026/08/03/pelicans-sign-caleb-houstan-to-a-one-year-contract/91158320007/",
+     "source_name": "Twitter",
+     "source_url": "https://hoopshype.com/social/"
+    },
+    {
+     "id": "91158310007",
+     "text": "Charlie Walton: I am told that Will Barton, an 11-year NBA veteran wing, will be joining the Timberwolves' coaching staff this season in a player development role. Barton was an assistant coach with the Iowa Wolves last season and with this year's Summer League team. Tim Connelly was the General Manager of the Denver Nuggets when they traded for Barton in 2015. Barton spent roughly eight years in Denver, all of which came under Connelly.",
+     "team": "Minnesota Timberwolves",
+     "published": "2026-08-03T22:02:59Z",
+     "url": "https://www.hoopshype.com/story/sports/nba/rumors/2026/08/03/will-barton-to-join-timberwolves-coaching-staff-in-player-development-role/91158310007/",
+     "source_name": "Twitter",
+     "source_url": "http://twitter.com/CharlieWaltonMN/status/2084377235272720867"
+    }
+   ]
+  },
+  {
    "id": "20260802T185136Z",
    "built_at": "2026-08-02T18:51:36.182678Z",
    "rumors": [
